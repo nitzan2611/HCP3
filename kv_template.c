@@ -98,7 +98,8 @@ struct packet {
         } eager_get_response;
 
         struct {
-            /* TODO */
+			const char *key;//@NITZAN
+			const char **value;//@NITZAN
         } eager_get_request;
 
         struct {
@@ -658,8 +659,35 @@ void handle_server_packets_only(struct pingpong_context *ctx, struct packet *pac
     switch (packet->type) {
 	/* Only handle packets relevant to the server here - client will handle inside get/set() calls */
     case EAGER_GET_REQUEST: /* TODO (10LOC): handle a short GET() on the server */
-    case EAGER_SET_REQUEST: /* TODO (10LOC): handle a short SET() on the server */
-    case RENDEZVOUS_GET_REQUEST: /* TODO (10LOC): handle a long GET() on the server */
+    {
+				
+		struct{
+			int value_length;//@NITZAN
+			char *value;//@NITZAN
+        } my_response;
+		
+		printf("Received Eager Get Request \n");
+		my_response.value_length=1; //todo not 1
+		my_response.value='A'; //todo not 1
+		response_size = (sizeof my_response);
+		ctx->buf = &my_response;
+		
+	}
+	case EAGER_SET_REQUEST: /* TODO (10LOC): handle a short SET() on the server */
+    {
+				
+		struct{
+			int value_length;//@NITZAN
+			char *value;//@NITZAN
+        } my_response;
+		
+		printf("Received Eager Set Request \n");
+		my_response.value_length=1; //todo not 1
+		my_response.value='A'; //todo not 1
+		response_size = (sizeof my_response);
+		ctx->buf = &my_response;
+	}
+	case RENDEZVOUS_GET_REQUEST: /* TODO (10LOC): handle a long GET() on the server */
     case RENDEZVOUS_SET_REQUEST: /* TODO (20LOC): handle a long SET() on the server */
 
 #ifdef EX4
@@ -934,13 +962,16 @@ int kv_set(void *kv_handle, const char *key, const char *value)
     unsigned packet_size = strlen(key) + strlen(value) + sizeof(struct packet);
     if (packet_size < (EAGER_PROTOCOL_LIMIT)) {
         /* Eager protocol - exercise part 1 */
+		printf("Got into eager set\n");
         set_packet->type = EAGER_SET_REQUEST;
-        /* TODO (4LOC): fill in the rest of the set_packet */
 
+		set_packet->eager_set_request.key_and_value[0]=0x00;//@NITZAN
         pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
-        return pp_wait_completions(ctx, 1); /* await EAGER_SET_REQUEST completion */
+		printf("eager set before answer\n");
+		return pp_wait_completions(ctx, 1); /* await EAGER_SET_REQUEST completion */
     }
 
+	//@YAIR
     /* Otherwise, use RENDEZVOUS - exercise part 2 */
     set_packet->type = RENDEZVOUS_SET_REQUEST;
     /* TODO (4LOC): fill in the rest of the set_packet - request peer address & remote key */
@@ -956,12 +987,43 @@ int kv_set(void *kv_handle, const char *key, const char *value)
 
 int kv_get(void *kv_handle, const char *key, char **value)
 {
+	
+	struct pingpong_context *ctx = kv_handle;
+    struct packet *get_packet = (struct packet*)ctx->buf;
+
+    unsigned packet_size = strlen(key) + strlen(value) + sizeof(struct packet);
+    if (packet_size < (EAGER_PROTOCOL_LIMIT)) {
+        /* Eager protocol - exercise part 1 */
+
+        get_packet->type = EAGER_GET_REQUEST;
+		get_packet->eager_get_request.key = key;
+		get_packet->eager_get_request.value = value;
+        pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
+        return pp_wait_completions(ctx, 1); /* await EAGER_SET_REQUEST completion */
+    }
+
+	//@YAIR
+    /* Otherwise, use RENDEZVOUS - exercise part 2 */
+    get_packet->type = RENDEZVOUS_SET_REQUEST;
+    /* TODO (4LOC): fill in the rest of the get_packet - request peer address & remote key */
+
+    pp_post_recv(ctx, 1); /* Posts a receive-buffer for RENDEZVOUS_SET_RESPONSE */
+    pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
+    assert(pp_wait_completions(ctx, 2)); /* wait for both to complete */
+
+    assert(get_packet->type == RENDEZVOUS_SET_RESPONSE);
+    pp_post_send(ctx, IBV_WR_RDMA_WRITE, packet_size, value, NULL, 0/* TODO (1LOC): replace with remote info for RDMA_WRITE from packet */);
+    return pp_wait_completions(ctx, 1); /* wait for both to complete */
+	
+	
+	
     return 0; /* TODO (25LOC): similar to SET, only no n*/
 }
 
 void kv_release(char *value)
 {
     /* TODO (2LOC): free value */
+	/* TODO - figure out when is this value intialized because i cant find it */
 }
 
 int kv_close(void *kv_handle)
@@ -1165,15 +1227,16 @@ void run_server()
 
 int main(int argc, char **argv)
 {
+
     void *kv_ctx; /* handle to internal KV-client context */
 
-    char send_buffer[MAX_TEST_SIZE] = {0};
-    char *recv_buffer;
+    char *send_buffer =(char*) malloc(2000);
+    char *recv_buffer =(char*) malloc(2000);
 
     struct kv_server_address servers[2] = {
             {
                     .servername = "localhost",
-                    .port = 12345
+                    .port = 8181
             },
             {0}
     };
@@ -1188,6 +1251,8 @@ int main(int argc, char **argv)
     };
 #endif
 
+	printf("2 stop\n");
+
     g_argc = argc;
     g_argv = argv;
     if (argc > 1) {
@@ -1200,13 +1265,26 @@ int main(int argc, char **argv)
     assert(0 == my_open(&servers[0], &kv_ctx));
 #endif
 
+
+	printf("Start Testing\n");
     /* Test small size */
     assert(100 < MAX_TEST_SIZE);
+	printf("1Start Testing\n");
+
     memset(send_buffer, 'a', 100);
-    assert(0 == set(kv_ctx, "1", send_buffer));
-    assert(0 == get(kv_ctx, "1", &recv_buffer));
-    assert(0 == strcmp(send_buffer, recv_buffer));
+	printf("2Start Testing\n");
+
+	//assert(0 == set(kv_ctx, "1", send_buffer));
+	printf("3Start Testing\n");
+
+	//assert(0 == get(kv_ctx, "1", &recv_buffer));
+	printf("4Start Testing\n");
+
+    //assert(0 == strcmp(send_buffer, recv_buffer));
+	printf("5Start Testing\n");
+
     release(recv_buffer);
+	printf("Finish Testing\n");
 
     /* Test logic */
     assert(0 == get(kv_ctx, "test1", &recv_buffer));
