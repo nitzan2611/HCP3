@@ -1,0 +1,5 @@
+to execute:
+1) make
+2) kv -p <PORT_NUM> &
+3) kv
+
