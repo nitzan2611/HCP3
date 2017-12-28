@@ -1,35 +1,3 @@
-/*
- * Copyright (c) 2005 Topspin Communications.  All rights reserved.
- * Copyright (c) 2006 Cisco Systems.  All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * OpenIB.org BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 
 #include <assert.h>
 #include <stdio.h>
@@ -45,7 +13,6 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <time.h>
-
 #include <infiniband/verbs.h>
 
 #ifdef EX4
@@ -57,6 +24,7 @@
 
 int g_argc;
 char **g_argv;
+
 
 #define EAGER_PROTOCOL_LIMIT (1 << 22) /* 4KB limit */
 #define MAX_TEST_SIZE (10 * EAGER_PROTOCOL_LIMIT)
@@ -81,6 +49,7 @@ enum packet_type {
 
 struct packet {
     enum packet_type type; /* What kind of packet/protocol is this */
+	int packet_size;
     union {
         /* The actual packet type will determine which struct will be used: */
 
@@ -89,17 +58,18 @@ struct packet {
 #ifdef EX4
             unsigned value_length; /* value is binary, so needs to have length! */
 #endif
-            char key_and_value[0]; /* null terminator between key and value */
+			char key_and_value[0]; /* null terminator between key and value */
+			int keyLength;
+			int valLength;
         } eager_set_request;
 
         struct {
-            unsigned value_length;
+            int value_length;
             char value[0];
         } eager_get_response;
 
         struct {
-			const char *key;//@NITZAN
-			const char **value;//@NITZAN
+			int keyLength;
         } eager_get_request;
 
         struct {
@@ -652,6 +622,54 @@ static void usage(const char *argv0)
 	printf("  -g, --gid-idx=<gid index> local port gid index\n");
 }
 
+struct nlist { /* table entry: */
+    struct nlist *next; /* next entry in chain */
+    char *name; /* defined name */
+    char *defn; /* replacement text */
+};
+
+#define HASHSIZE 101
+static struct nlist *hashtab[HASHSIZE]; /* pointer table */
+
+/* hash: form hash value for string s */
+unsigned hash(char *s)
+{
+    unsigned hashval;
+    for (hashval = 0; *s != '\0'; s++)
+      hashval = *s + 31 * hashval;
+    return hashval % HASHSIZE;
+}
+
+/* lookup: look for s in hashtab */
+struct nlist *lookup(char *s)
+{
+    struct nlist *np;
+    for (np = hashtab[hash(s)]; np != NULL; np = np->next)
+        if (strcmp(s, np->name) == 0)
+          return np; /* found */
+    return NULL; /* not found */
+}
+
+/* install: put (name, defn) in hashtab */
+struct nlist *install(char *name, char *defn)
+{
+    struct nlist *np;
+    unsigned hashval;
+    if ((np = lookup(name)) == NULL) { /* not found */
+        np = (struct nlist *) malloc(sizeof(*np));
+        if (np == NULL || (np->name = strdup(name)) == NULL)
+          return NULL;
+        hashval = hash(name);
+        np->next = hashtab[hashval];
+        hashtab[hashval] = np;
+    } else /* already there */
+        free((void *) np->defn); /*free previous defn */
+    if ((np->defn = strdup(defn)) == NULL)
+       return NULL;
+    return np;
+}
+
+
 void handle_server_packets_only(struct pingpong_context *ctx, struct packet *packet)
 {
 	unsigned response_size = 0;
@@ -659,33 +677,44 @@ void handle_server_packets_only(struct pingpong_context *ctx, struct packet *pac
     switch (packet->type) {
 	/* Only handle packets relevant to the server here - client will handle inside get/set() calls */
     case EAGER_GET_REQUEST: /* TODO (10LOC): handle a short GET() on the server */
-    {
-				
-		struct{
-			int value_length;//@NITZAN
-			char *value;//@NITZAN
-        } my_response;
-		
-		printf("Received Eager Get Request \n");
-		my_response.value_length=1; //todo not 1
-		my_response.value='A'; //todo not 1
-		response_size = (sizeof my_response);
-		ctx->buf = &my_response;
-		
+    {		
+			char* recKey=(ctx->buf +  packet->packet_size);
+			struct nlist* my_n_list = lookup(recKey);
+			printf("DIDNT FIND KEY\n");
+			while(!my_n_list)
+			{
+				my_n_list = lookup(recKey);
+			}
+			char* recVal = my_n_list->defn;			
+			response_size =  packet->packet_size + strlen(recVal)+1;
+			struct packet *ans_packet = (struct packet*)ctx->buf;
+			ans_packet->type = EAGER_GET_RESPONSE;
+			ans_packet->eager_get_response.value_length=strlen(recVal)+1;
+			int packSize = (sizeof(struct packet));
+			ans_packet->packet_size = packSize;
+			packSize = (sizeof(struct packet));
+			ans_packet->packet_size = packSize;
+			memcpy(  packSize + ans_packet , recVal,strlen(recVal)+1);
+
+			int n=packSize + strlen(recVal)+1, i =0;
+			unsigned char* byte_array = ans_packet;
+
+			response_size= packSize +ans_packet->eager_get_response.value_length;
+
+			break;
+			
 	}
 	case EAGER_SET_REQUEST: /* TODO (10LOC): handle a short SET() on the server */
-    {
-				
-		struct{
-			int value_length;//@NITZAN
-			char *value;//@NITZAN
-        } my_response;
-		
-		printf("Received Eager Set Request \n");
-		my_response.value_length=1; //todo not 1
-		my_response.value='A'; //todo not 1
-		response_size = (sizeof my_response);
-		ctx->buf = &my_response;
+    {		
+			printf("EAGER SET REQUEST\n");
+			char* recKey=(ctx->buf + packet->packet_size);		
+			char* recVal=(ctx->buf +  packet->packet_size+ strlen(recKey)+1);
+			int n=10, i =0;
+			unsigned char* byte_array =recVal;
+
+			int res = install(recKey,recVal);
+			printf("Insert Key success: %d\n",res);
+			response_size=0;
 	}
 	case RENDEZVOUS_GET_REQUEST: /* TODO (10LOC): handle a long GET() on the server */
     case RENDEZVOUS_SET_REQUEST: /* TODO (20LOC): handle a long SET() on the server */
@@ -698,6 +727,7 @@ void handle_server_packets_only(struct pingpong_context *ctx, struct packet *pac
     }
 	
 	if (response_size) {
+		printf("Sending Response\n");
 		pp_post_send(ctx, IBV_WR_SEND, response_size, NULL, NULL, 0);
 	}
 }
@@ -905,7 +935,7 @@ int orig_main(struct kv_server_address *server, unsigned size, int argc, char *a
     return 0;
 }
 
-int pp_wait_completions(struct pingpong_context *ctx, int iters)
+int pp_wait_completions(struct pingpong_context *ctx, int iters,int server)
 {
     int rcnt, scnt, num_cq_events, use_event = 0;
 	rcnt = scnt = 0;
@@ -932,16 +962,19 @@ int pp_wait_completions(struct pingpong_context *ctx, int iters)
 
 			switch ((int) wc[i].wr_id) {
 			case PINGPONG_SEND_WRID:
+				scnt++;
 				break;
 
 			case PINGPONG_RECV_WRID:
-				pp_post_recv(ctx, 1);
-				handle_server_packets_only(ctx, ctx->buf);
-				break;
+				rcnt++;
+				if(server)
+				{
+					pp_post_recv(ctx, 1);
+					handle_server_packets_only(ctx, ctx->buf);
+					break;
+				}
 
 			default:
-				fprintf(stderr, "Completion for unknown wr_id %d\n",
-					(int) wc[i].wr_id);
 				return 1;
 			}
 		}
@@ -955,20 +988,30 @@ int kv_open(struct kv_server_address *server, void **kv_handle)
 }
 
 int kv_set(void *kv_handle, const char *key, const char *value)
-{
+{    
     struct pingpong_context *ctx = kv_handle;
     struct packet *set_packet = (struct packet*)ctx->buf;
-
-    unsigned packet_size = strlen(key) + strlen(value) + sizeof(struct packet);
+    unsigned packet_size = strlen(key)+1 + strlen(value)+1 + sizeof(struct packet);
     if (packet_size < (EAGER_PROTOCOL_LIMIT)) {
         /* Eager protocol - exercise part 1 */
-		printf("Got into eager set\n");
+		printf("START EAGER SET REQUEST\n");
         set_packet->type = EAGER_SET_REQUEST;
+		set_packet->eager_set_request.key_and_value[0]=0x00;
+		set_packet->eager_set_request.keyLength=strlen(key);
 
-		set_packet->eager_set_request.key_and_value[0]=0x00;//@NITZAN
-        pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
-		printf("eager set before answer\n");
-		return pp_wait_completions(ctx, 1); /* await EAGER_SET_REQUEST completion */
+		set_packet->eager_set_request.valLength=strlen(value);
+		set_packet->packet_size = sizeof(struct packet);
+
+		set_packet->packet_size = sizeof(struct packet);
+
+		memcpy((ctx->buf) + sizeof(struct packet) , key,strlen(key)+1);
+		memcpy((ctx->buf) + sizeof(struct packet)+strlen(key)+1 , value,strlen(value)+1);
+
+		
+		pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
+        printf("Finished Eager Set \n");
+		return pp_wait_completions(ctx, 1,0); /* await EAGER_SET_REQUEST completion */
+		
     }
 
 	//@YAIR
@@ -978,28 +1021,52 @@ int kv_set(void *kv_handle, const char *key, const char *value)
 
     pp_post_recv(ctx, 1); /* Posts a receive-buffer for RENDEZVOUS_SET_RESPONSE */
     pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
-    assert(pp_wait_completions(ctx, 2)); /* wait for both to complete */
+    assert(pp_wait_completions(ctx, 2,1)); /* wait for both to complete */
 
     assert(set_packet->type == RENDEZVOUS_SET_RESPONSE);
     pp_post_send(ctx, IBV_WR_RDMA_WRITE, packet_size, value, NULL, 0/* TODO (1LOC): replace with remote info for RDMA_WRITE from packet */);
-    return pp_wait_completions(ctx, 1); /* wait for both to complete */
+    return pp_wait_completions(ctx, 1,1); /* wait for both to complete */
 }
 
 int kv_get(void *kv_handle, const char *key, char **value)
 {
-	
 	struct pingpong_context *ctx = kv_handle;
     struct packet *get_packet = (struct packet*)ctx->buf;
-
-    unsigned packet_size = strlen(key) + strlen(value) + sizeof(struct packet);
+    unsigned packet_size = strlen(key) +sizeof(struct packet);
     if (packet_size < (EAGER_PROTOCOL_LIMIT)) {
         /* Eager protocol - exercise part 1 */
-
+		printf("Got into eager get\n");
         get_packet->type = EAGER_GET_REQUEST;
-		get_packet->eager_get_request.key = key;
-		get_packet->eager_get_request.value = value;
+		get_packet->eager_get_request.keyLength = strlen(key)+1;
+		get_packet->packet_size = sizeof(struct packet);
+
+		memcpy((ctx->buf) + sizeof(struct packet) , key,strlen(key)+1);
         pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
-        return pp_wait_completions(ctx, 1); /* await EAGER_SET_REQUEST completion */
+		pp_post_recv(ctx, 1); /* Wait Packet From Server */
+
+        int res =  pp_wait_completions(ctx, 2,0); /* await EAGER_GET_REQUEST completion */
+
+		struct packet *ret_packet = (struct packet*)ctx->buf;
+		if(ret_packet->type == EAGER_GET_RESPONSE)
+		{
+			int mysize = ret_packet->packet_size+2;
+			int length = ret_packet->eager_get_response.value_length;
+			printf("Start of value is %d\n",mysize);
+			printf("Length is %d\n",length);
+			printf("Pointer to ret_packet %p \n", ret_packet );
+			memcpy(*value,((char*)ret_packet) + mysize,length);
+			printf("\n Final Value%s \n",*value);
+			(*value)[length]='\0';
+			int n= 100 , i=0;
+			unsigned char* byte_array = ret_packet;
+
+			printf("FINAL LENGTH VALUE %d\n ",strlen(*value));
+			return 0;
+		}
+		return -1;	
+
+
+
     }
 
 	//@YAIR
@@ -1009,11 +1076,11 @@ int kv_get(void *kv_handle, const char *key, char **value)
 
     pp_post_recv(ctx, 1); /* Posts a receive-buffer for RENDEZVOUS_SET_RESPONSE */
     pp_post_send(ctx, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
-    assert(pp_wait_completions(ctx, 2)); /* wait for both to complete */
+    assert(pp_wait_completions(ctx, 2,1)); /* wait for both to complete */
 
     assert(get_packet->type == RENDEZVOUS_SET_RESPONSE);
     pp_post_send(ctx, IBV_WR_RDMA_WRITE, packet_size, value, NULL, 0/* TODO (1LOC): replace with remote info for RDMA_WRITE from packet */);
-    return pp_wait_completions(ctx, 1); /* wait for both to complete */
+    return pp_wait_completions(ctx, 1,1); /* wait for both to complete */
 	
 	
 	
@@ -1038,14 +1105,6 @@ int kv_close(void *kv_handle)
 #define release  kv_release
 #define my_close kv_close
 #endif /* EX3 */
-
-
-
-
-
-
-
-
 
 
 #ifdef EX4
@@ -1103,13 +1162,6 @@ void mkv_close(void *mkv_h)
 }
 
 
-
-
-
-
-
-
-
 struct dkv_ctx {
 	struct mkv_ctx *mkv;
 	struct pingpong_context *indexer;
@@ -1142,7 +1194,7 @@ int dkv_set(void *dkv_h, const char *key, const char *value, unsigned length)
 
     pp_post_recv(ctx->indexer, 1); /* Posts a receive-buffer for LOCATION */
     pp_post_send(ctx->indexer, IBV_WR_SEND, packet_size, NULL, NULL, 0); /* Sends the packet to the server */
-    assert(pp_wait_completions(ctx->indexer, 2)); /* wait for both to complete */
+    assert(pp_wait_completions(ctx->indexer, 2,1)); /* wait for both to complete */
 
     /* Step #2: The Index server responds with LOCATION(#kv-server-id) */
     assert(set_packet->type == LOCATION);
@@ -1211,17 +1263,12 @@ void recursive_fill_kv(char const* dirname, void *dkv_h) {
 
 
 
-
-
-
-
-
 void run_server()
 {
     struct pingpong_context *ctx;
     struct kv_server_address server = {0};
     assert(0 == orig_main(&server, EAGER_PROTOCOL_LIMIT, g_argc, g_argv, &ctx));
-    while (0 <= pp_wait_completions(ctx, 1));
+    while (0 <= pp_wait_completions(ctx, 1,1));
     pp_close_ctx(ctx);
 }
 
@@ -1266,25 +1313,19 @@ int main(int argc, char **argv)
 #endif
 
 
-	printf("Start Testing\n");
     /* Test small size */
     assert(100 < MAX_TEST_SIZE);
-	printf("1Start Testing\n");
-
+	
     memset(send_buffer, 'a', 100);
-	printf("2Start Testing\n");
 
-	//assert(0 == set(kv_ctx, "1", send_buffer));
-	printf("3Start Testing\n");
+	assert(0 == set(kv_ctx, "1", send_buffer));
+	assert(0 == get(kv_ctx, "1", &recv_buffer));
 
-	//assert(0 == get(kv_ctx, "1", &recv_buffer));
-	printf("4Start Testing\n");
-
-    //assert(0 == strcmp(send_buffer, recv_buffer));
-	printf("5Start Testing\n");
+	assert(0 == strcmp(send_buffer, recv_buffer));
+	printf("SUCESS \n");
+	return 0;
 
     release(recv_buffer);
-	printf("Finish Testing\n");
 
     /* Test logic */
     assert(0 == get(kv_ctx, "test1", &recv_buffer));
